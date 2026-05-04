@@ -38,12 +38,33 @@ blockquote { border-left: 3px solid #888; padding-left: 16px; color: #555; font-
 <p>OLMoE is a Mixture-of-Experts transformer. Sixteen identical layers stacked. Each layer does two things: attention (every token looks at prior tokens) and feed-forward (every token passes through a wider representation to think about what the context means). What makes OLMoE different from a dense model is that last part: instead of one feed-forward network per layer, it has <strong>64 experts</strong>, and each token picks the best 8 of them at every layer.</p>
 <p>That's the MoE trick. 64 experts' worth of <em>capacity</em> for 8 experts' worth of <em>compute</em> per token. OLMoE has 7 billion total parameters but only about 1 billion activate for any given token. It's how modern MoE models like Mixtral, DeepSeek, and GPT-4 are architected.</p>
 <p>Now. Why isn't prefill attention-bound?</p>
-<p>The answer is one of those math-class moments where the constant factor buries the asymptotic. Every matrix multiplication in a transformer costs <code>2·m·n·k</code> floating-point operations. At input length N=1024, per layer:</p>
-<ul>
-<li><strong>Attention's quadratic term:</strong> about 8,192 · N² FLOPs. At N=1024, that's 8 GFLOPs.</li>
-<li><strong>MoE FFN with 8 active experts:</strong> about 67M · N FLOPs. At N=1024, that's 69 GFLOPs.</li>
-</ul>
-<p>MoE FFN is doing about <strong>9× more FLOPs than attention</strong> at N=1024. Yes, attention is quadratic and FFN is linear, but look at the coefficients: 8,192 vs. 67 million. Attention's quadratic term doesn't catch up with MoE FFN's linear term until N is around 8,000 tokens. I was benchmarking at 1,024. I was deep in FFN territory, and FFN was doing most of the work.</p>
+<p>The answer is one of those math-class moments where the constant factor buries the asymptotic. Let me show the arithmetic instead of asking you to take it on faith.</p>
+<p><strong>The one formula:</strong> a matrix multiplication of shape <code>A (m × k) · B (k × n)</code> costs about <code>2 · m · n · k</code> floating-point operations. Every matmul in a transformer fits this shape. If you remember only one formula from this post, pick this one — you can estimate any model's compute cost on a napkin.</p>
+<p>Now let's count, per layer, at input length N=1024.</p>
+<p><strong>Attention's expensive piece is the score matrix</strong> — each of N tokens takes a dot product with every other token. That's two back-to-back matmuls of shape <code>(N × d_head) · (d_head × N)</code> and its transpose, summed across all attention heads. On OLMoE, the total "attention width" (num_heads × d_head) equals d_model = 2048. So per layer:</p>
+<pre><code>Attention score + apply FLOPs = 4 · N² · d_model
+                              = 4 · (1024)² · 2048
+                              ≈ 8.6 × 10⁹ = 8.6 GFLOPs
+</code></pre>
+<p>That's the N² term. Doubles when N doubles. Quadruples when N doubles again.</p>
+<p><strong>MoE FFN's expensive piece is a wide matmul per active expert.</strong> OLMoE activates 8 experts per token; each expert has an intermediate dimension of about <code>d_ff ≈ 1024</code> and runs two matmuls (up-proj + down-proj). Total FLOPs per token, per layer:</p>
+<pre><code>FFN FLOPs per token = 8 experts × 2 matmuls × 2 · d_model · d_ff
+                    = 8 × 2 × 2 · 2048 · 1024
+                    ≈ 6.7 × 10⁷ FLOPs per token
+</code></pre>
+<p>Multiply by N tokens in the prefill batch:</p>
+<pre><code>FFN FLOPs per layer = (6.7 × 10⁷) · N
+                    = (6.7 × 10⁷) · 1024
+                    ≈ 6.9 × 10¹⁰ = 69 GFLOPs
+</code></pre>
+<p>That's the N¹ term — linear in N. It doubles when N doubles.</p>
+<p><strong>Side by side at N=1024:</strong></p>
+<pre><code>Attention:  8.6 GFLOPs   (grows as N²)
+MoE FFN:    69  GFLOPs   (grows as N, but with a huge coefficient)
+</code></pre>
+<p>FFN is doing <strong>8× more work than attention</strong> at this length. Yes, attention is asymptotically worse — but look at the coefficients: <code>4 · d_model</code> vs. <code>32 · d_model · d_ff</code>. The FFN coefficient is <code>8 · d_ff</code> ≈ 8,000 times larger. Attention's quadratic growth takes a while to catch up.</p>
+<p>Solve for the crossover: <code>4 · N² · d_model = 32 · N · d_model · d_ff</code> gives <code>N = 8 · d_ff ≈ 8,000 tokens</code>. Below that, FFN dominates. Above that, attention dominates.</p>
+<p>I was benchmarking at N=1024. I was deep in FFN territory, and FFN was doing most of the work.</p>
 <p>That's the first surprise resolved. Attention isn't the bottleneck at these lengths. The textbook was telling me the right story for the wrong regime.</p>
 <p>Now decode. Why is TPOT flat?</p>
 <p>Decode is a different animal. During decode, we generate one token at a time. Each step has almost no arithmetic — it's one token's worth of multiplies. But the model still has to load all its weights from GPU memory to multiply against that one token.</p>
