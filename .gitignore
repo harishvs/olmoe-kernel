@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+*.so
+*.nsys-rep
+*.sqlite
+.claude/
+data/
+talk/aws_template.pptx
+talk/deck.pptx
+talk/substack.md
+scripts/plots/olmoe_arch.py
+scripts/build_deck.py

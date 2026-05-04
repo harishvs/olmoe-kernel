@@ -1,0 +1,293 @@
+{
+  "concurrency": 4,
+  "n_completed": 38,
+  "duration_s": 29.49476572399726,
+  "requests_per_s": 1.2883641916532595,
+  "output_tokens_per_s": 159.79106408583718,
+  "ttft_ms": {
+    "mean": 137.3947567887004,
+    "p50": 137.80624148785137,
+    "p90": 170.40055399411358,
+    "p99": 177.60316401836462
+  },
+  "tpot_ms": {
+    "mean": 25.02248837777804,
+    "p50": 24.994374535415012,
+    "p90": 25.750544787509234,
+    "p99": 33.39395468519592
+  },
+  "total_ms": {
+    "mean": 3206.3440402638853,
+    "p50": 3292.22044198832,
+    "p90": 3384.1362179955468,
+    "p99": 3421.489972010022
+  },
+  "raw": [
+    {
+      "label": "sharegpt_YBdV3Qw_0_tok447",
+      "ttft_ms": 118.33695499808528,
+      "tpot_ms": 25.351437283533176,
+      "total_ms": 3337.969490006799,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_nswpJVA_38_tok312",
+      "ttft_ms": 150.70205999654718,
+      "tpot_ms": 25.055346094524694,
+      "total_ms": 3332.731014001183,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_BytSp2M_0_tok143",
+      "ttft_ms": 152.21331000793725,
+      "tpot_ms": 25.049999062939893,
+      "total_ms": 3333.5631910013035,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_PX9OmtU_0_tok167",
+      "ttft_ms": 151.98810599395074,
+      "tpot_ms": 25.050249543337987,
+      "total_ms": 3333.369797997875,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_D8cH9A2_0_tok333",
+      "ttft_ms": 115.09394901804626,
+      "tpot_ms": 24.938750007890135,
+      "total_ms": 3282.3152000200935,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_lWRLJrZ_4_tok410",
+      "ttft_ms": 177.60316401836462,
+      "tpot_ms": 24.473614621986304,
+      "total_ms": 3285.7522210106254,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_3E7iMzS_60_tok429",
+      "ttft_ms": 177.14542499743402,
+      "tpot_ms": 24.476398614200388,
+      "total_ms": 3285.6480490008835,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_6Qu8GDC_6_tok353",
+      "ttft_ms": 177.39562000497244,
+      "tpot_ms": 24.47664357472475,
+      "total_ms": 3285.929353995016,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_1sxNkyQ_26_tok167",
+      "ttft_ms": 109.43052798393182,
+      "tpot_ms": 24.918987598374677,
+      "total_ms": 3274.1419529775158,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_qyWeq17_0_tok395",
+      "ttft_ms": 148.85563700227067,
+      "tpot_ms": 24.622545999934985,
+      "total_ms": 3275.9189789940137,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_KC8lP2V_0_tok211",
+      "ttft_ms": 149.10584199242294,
+      "tpot_ms": 24.62453044873963,
+      "total_ms": 3276.421208982356,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_KOczjDP_24_tok218",
+      "ttft_ms": 149.4198680156842,
+      "tpot_ms": 24.626901212623196,
+      "total_ms": 3277.03632201883,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_oXgiN7q_152_tok332",
+      "ttft_ms": 161.39030098565854,
+      "tpot_ms": 25.17517051116253,
+      "total_ms": 1294.2729739879724,
+      "num_output_tokens": 46
+    },
+    {
+      "label": "sharegpt_MHhot3v_0_tok367",
+      "ttft_ms": 117.97798200859688,
+      "tpot_ms": 25.50376763779993,
+      "total_ms": 3356.9564720091876,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_yAwGFqP_92_tok130",
+      "ttft_ms": 161.11718499450944,
+      "tpot_ms": 25.14536423639827,
+      "total_ms": 3354.5784430170897,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_flpSFLe_4_tok439",
+      "ttft_ms": 160.65214600530453,
+      "tpot_ms": 25.15303919698647,
+      "total_ms": 3355.0881240225863,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_CSi9W7V_36_tok138",
+      "ttft_ms": 107.84688498824835,
+      "tpot_ms": 24.70525460639477,
+      "total_ms": 3245.4142200003844,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_sPmyhRn_16_tok489",
+      "ttft_ms": 108.82030599168502,
+      "tpot_ms": 23.09717838588266,
+      "total_ms": 3042.161960998783,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_HTmdESb_0_tok309",
+      "ttft_ms": 157.63881499879062,
+      "tpot_ms": 22.632884417383703,
+      "total_ms": 3032.015136006521,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_kO0lfTs_0_tok434",
+      "ttft_ms": 157.50440198462456,
+      "tpot_ms": 22.63080940960437,
+      "total_ms": 3031.6171970043797,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_IKbZEWU_0_tok231",
+      "ttft_ms": 110.59715200099163,
+      "tpot_ms": 23.32562561431995,
+      "total_ms": 3072.9516050196253,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_SvEH1KA_0_tok448",
+      "ttft_ms": 118.9710019971244,
+      "tpot_ms": 25.23851384249274,
+      "total_ms": 3324.262259993702,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_KRyRq79_114_tok291",
+      "ttft_ms": 170.40055399411358,
+      "tpot_ms": 24.907480598533688,
+      "total_ms": 3333.650590007892,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_FaR8mxt_14_tok306",
+      "ttft_ms": 170.39244400803,
+      "tpot_ms": 24.907722960567234,
+      "total_ms": 3333.6732600000687,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_sCw8Ocq_0_tok137",
+      "ttft_ms": 133.17086899769492,
+      "tpot_ms": 25.598152354313793,
+      "total_ms": 3384.1362179955468,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_gg5r0Dy_0_tok316",
+      "ttft_ms": 114.97729999246076,
+      "tpot_ms": 25.971673520871263,
+      "total_ms": 2608.257957996102,
+      "num_output_tokens": 97
+    },
+    {
+      "label": "sharegpt_N3aaMrp_0_tok282",
+      "ttft_ms": 151.1707839963492,
+      "tpot_ms": 25.750544787509234,
+      "total_ms": 3421.489972010022,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_2CKVlKw_88_tok147",
+      "ttft_ms": 150.58872199733742,
+      "tpot_ms": 25.75468070077248,
+      "total_ms": 3421.433170995442,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_U5yUTGQ_0_tok486",
+      "ttft_ms": 141.74925099359825,
+      "tpot_ms": 25.665157952842737,
+      "total_ms": 3401.2243110046256,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_nyw2ooH_8_tok253",
+      "ttft_ms": 116.55368100036867,
+      "tpot_ms": 25.681813015587863,
+      "total_ms": 3378.143933980027,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_x5iwfyV_136_tok496",
+      "ttft_ms": 127.66766600543633,
+      "tpot_ms": 25.56191381102787,
+      "total_ms": 3374.030720005976,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_J7GNwNh_0_tok215",
+      "ttft_ms": 127.90298098116182,
+      "tpot_ms": 25.5669013149743,
+      "total_ms": 3374.899447982898,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_7mH2NVL_20_tok158",
+      "ttft_ms": 111.96201801067218,
+      "tpot_ms": 24.11235421258905,
+      "total_ms": 3174.2310030094814,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_lHGV5FY_0_tok228",
+      "ttft_ms": 97.91138299624436,
+      "tpot_ms": 33.39395468519592,
+      "total_ms": 3069.9733499786817,
+      "num_output_tokens": 90
+    },
+    {
+      "label": "sharegpt_YAhudFD_0_tok143",
+      "ttft_ms": 108.71045201201923,
+      "tpot_ms": 23.613385362073956,
+      "total_ms": 3107.6103929954115,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_UmAxat5_0_tok128",
+      "ttft_ms": 109.01787801412866,
+      "tpot_ms": 23.61817711021927,
+      "total_ms": 3108.526371011976,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_RSZbMp3_0_tok287",
+      "ttft_ms": 133.86323198210448,
+      "tpot_ms": 24.91849053542929,
+      "total_ms": 3298.5115299816243,
+      "num_output_tokens": 128
+    },
+    {
+      "label": "sharegpt_PPA2N0Y_0_tok320",
+      "ttft_ms": 115.15490300371312,
+      "tpot_ms": 25.55914351182227,
+      "total_ms": 3361.1661290051416,
+      "num_output_tokens": 128
+    }
+  ]
+}

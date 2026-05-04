@@ -1,0 +1,18 @@
+[project]
+name = "olmoe-kernel"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numba>=0.65.0",
+    "pandas>=3.0.2",
+    "torch>=2.11.0",
+    "transformers>=5.7.0",
+    "vllm>=0.20.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
