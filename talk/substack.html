@@ -1,0 +1,120 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<title>Is it fast?</title>
+<style>
+body { max-width: 780px; margin: 40px auto; font-family: Georgia, serif; line-height: 1.55; color: #222; padding: 0 16px; }
+h1 { font-size: 1.9em; }
+h2 { border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 1.8em; }
+code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-size: 0.92em; }
+pre code { display: block; padding: 12px; overflow-x: auto; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 6px 12px; text-align: left; }
+th { background: #f0f0f0; }
+img { max-width: 100%; }
+blockquote { border-left: 3px solid #888; padding-left: 16px; color: #555; font-style: italic; }
+</style></head>
+<body>
+<h1>Is it fast? What I learned profiling OLMoE on one L4</h1>
+<p>This is a write-up of an experiment I ran over a few days on an ordinary AWS instance — a <code>g6.4xlarge</code>, which is $1.32 an hour and has one NVIDIA L4 GPU. I wanted to take a real open-source language model, ask a simple question about it, and actually answer that question with measurements instead of intuition.</p>
+<p>The question was: <strong>is it fast?</strong></p>
+<p>Specifically: I'm running <a href="https://huggingface.co/allenai/OLMoE-1B-7B-0924-Instruct">OLMoE-1B-7B-Instruct</a> on vLLM on one L4. Am I getting good performance? What can I do to make it better?</p>
+<p>If you've ever fielded this question from a teammate, you know it's harder than it looks. "Good" relative to what? Better how? There's no crystal ball. There's only measurement, a mental model of what the machine is doing, and a ranked set of things to try.</p>
+<p>Here's what the measurements said.</p>
+<hr />
+<h2>Setting the baseline</h2>
+<p>Rule one of performance work: you cannot optimize what you have not measured.</p>
+<p>I wrote a small script that calls <code>vllm bench latency</code> across a grid of configurations: input lengths of 32, 128, 512, 1024 tokens, paired with output lengths of 1 and 128 tokens. The output-length-1 runs give me prefill cost alone — what's called <strong>TTFT</strong>, time to first token. The output-length-128 runs give me prefill-plus-decode. Subtract the two, divide by 127, and I get decode cost per token — <strong>TPOT</strong>, time per output token.</p>
+<p>30 iterations per configuration, 3 warmup iterations discarded, seed pinned at 42 so the synthetic prompts are identical run to run. Here's what fell out:</p>
+<p><img alt="Baseline TTFT/TPOT across input lengths" src="figures/tables/baseline.png" /></p>
+<p>Three things jumped out, and they set up everything that followed.</p>
+<p><strong>First, the variance is tiny.</strong> Across 30 iterations, p90 is within one millisecond of the mean. This is the reward for fixing the seed and running enough iterations. It meant any speedup I'd measure later would be a real signal, not noise.</p>
+<p><strong>Second, TTFT grows sub-linearly with input length.</strong> A 32× growth in input produced only 2.4× growth in prefill time. If you've read transformer papers you know attention is O(N²) — self-attention scales quadratically with input length. If attention dominated prefill, my TTFT curve should bend upward. It wasn't bending. Something else was eating the time.</p>
+<p><strong>Third, TPOT is nearly flat.</strong> Decode per token grew from 10.0 to 10.7 ms across a 32× input size change — six percent. Whatever's happening during decode, it barely cares how long the prompt was. That's a strong hint that decode has a different bottleneck than prefill.</p>
+<p><img alt="TTFT grows sub-linearly" src="figures/ttft_vs_length.png" />
+<em>The red dotted line is what attention-dominated prefill would look like (42 seconds at L=1024). The measured curve (blue) doesn't bend that way. In fact, it sits below even a linear reference.</em></p>
+<hr />
+<h2>The two surprises, explained</h2>
+<p>Before I could understand where the time was going, I had to refresh my picture of what OLMoE actually is.</p>
+<p>OLMoE is a Mixture-of-Experts transformer. Sixteen identical layers stacked. Each layer does two things: attention (every token looks at prior tokens) and feed-forward (every token passes through a wider representation to think about what the context means). What makes OLMoE different from a dense model is that last part: instead of one feed-forward network per layer, it has <strong>64 experts</strong>, and each token picks the best 8 of them at every layer.</p>
+<p>That's the MoE trick. 64 experts' worth of <em>capacity</em> for 8 experts' worth of <em>compute</em> per token. OLMoE has 7 billion total parameters but only about 1 billion activate for any given token. It's how modern MoE models like Mixtral, DeepSeek, and GPT-4 are architected.</p>
+<p>Now. Why isn't prefill attention-bound?</p>
+<p>The answer is one of those math-class moments where the constant factor buries the asymptotic. Every matrix multiplication in a transformer costs <code>2·m·n·k</code> floating-point operations. At input length N=1024, per layer:</p>
+<ul>
+<li><strong>Attention's quadratic term:</strong> about 8,192 · N² FLOPs. At N=1024, that's 8 GFLOPs.</li>
+<li><strong>MoE FFN with 8 active experts:</strong> about 67M · N FLOPs. At N=1024, that's 69 GFLOPs.</li>
+</ul>
+<p>MoE FFN is doing about <strong>9× more FLOPs than attention</strong> at N=1024. Yes, attention is quadratic and FFN is linear, but look at the coefficients: 8,192 vs. 67 million. Attention's quadratic term doesn't catch up with MoE FFN's linear term until N is around 8,000 tokens. I was benchmarking at 1,024. I was deep in FFN territory, and FFN was doing most of the work.</p>
+<p>That's the first surprise resolved. Attention isn't the bottleneck at these lengths. The textbook was telling me the right story for the wrong regime.</p>
+<p>Now decode. Why is TPOT flat?</p>
+<p>Decode is a different animal. During decode, we generate one token at a time. Each step has almost no arithmetic — it's one token's worth of multiplies. But the model still has to load all its weights from GPU memory to multiply against that one token.</p>
+<p>Think of it as a chef running back and forth to the fridge. On a GPU, the chef is the tensor cores and the fridge is HBM memory. When you're doing prefill with 1024 tokens of work, the tensor cores are fully lit — cook-bound, or compute-bound. When you're doing decode with one token, the tensor cores sit idle waiting for the chef to fetch the next armload of weights. That's fridge-bound, or <strong>memory-bandwidth-bound</strong>.</p>
+<p>The L4 has about 300 GB/s of memory bandwidth. OLMoE at decode has to load roughly 3 GB of active-expert weights per token (only 8 of 64 experts fire per token). Theoretical floor: 3 GB / 300 GB/s = 10 milliseconds per token. I measured 10 ms. The GPU was bandwidth-saturated.</p>
+<p>That's the second surprise. Decode doesn't care how long the prompt was because it's not doing prompt-proportional work — it's doing weight-loading work, and the weights are the same size regardless of prompt length.</p>
+<p>Two surprises, two different bottlenecks, two different levers.</p>
+<hr />
+<h2>The profile says don't write a kernel</h2>
+<p>I had a hypothesis from the math. Now I needed the profiler to confirm it.</p>
+<p>I ran <code>vllm bench latency</code> with <code>torch.profiler</code> enabled at the target configuration: input length 1024, single-token output. The profiler captures every CUDA kernel launch, its execution time, and its tensor shapes. Here's the top of the breakdown:</p>
+<p><img alt="Prefill kernel breakdown at L=1024" src="figures/tables/prefill_kernels.png" /></p>
+<p>The hypothesis held. FFN dominated, 80% of prefill time was inside a single vLLM kernel called <code>fused_moe_kernel</code>, which fuses expert dispatch, all the grouped expert GEMMs, and the combine step into one launch.</p>
+<p>But this is where my original plan died.</p>
+<p>My original plan was to write a custom GPU kernel for the softmax + top-K in the router. It seemed like the sweet spot for a learning project: small operation, clean shape, clearly doable. I had the profiler output loaded up, ready to see how much of TTFT the router was responsible for.</p>
+<p><strong>Seventy-seven microseconds.</strong> Zero-point-zero-nine percent of TTFT. The router wasn't a bottleneck. Even if I wrote a perfect kernel that ran 10× faster, I'd save 0.08% of TTFT. Below measurement noise.</p>
+<p>Meanwhile, the real bottleneck — <code>fused_moe_kernel</code> — was an already-heavily-tuned production kernel with tensor-core grouped GEMM inside it. Written by vLLM engineers who know a lot more about CUDA than I do. A solo developer isn't going to out-optimize that in a reasonable timeframe.</p>
+<p>This is the punchline I didn't expect: <strong>the profile told me not to write a kernel.</strong> There was no headroom on the hot path that was within my reach.</p>
+<p>That's not a failure of the experiment. That's the experiment working. Most performance-engineering work goes wrong because people skip profiling and jump to an intervention armed with intuition. They optimize the wrong thing, or optimize a thing that was already optimized. The profile is the gate that keeps you honest.</p>
+<p>So I dropped the kernel plan and asked a different question: if I can't write a kernel, what <em>can</em> the customer actually do?</p>
+<hr />
+<h2>The levers, measured</h2>
+<p>There are seven commonly-cited ways to speed up inference. I measured five of them. Here's where they landed for this workload.</p>
+<h3>FP8 quantization: −33% end-to-end</h3>
+<p>Weights are stored as bf16 by default — 16 bits each. FP8 means each weight takes 8 bits instead. Think of it like writing a phone number to one decimal place instead of two: some information loss, half the paper.</p>
+<p>For a bandwidth-bound decode, halving the weight size is almost a 2× speedup on the bandwidth-bound portion. I flipped one vLLM flag:</p>
+<pre><code class="language-bash">vllm bench latency --model allenai/OLMoE-1B-7B-0924-Instruct \
+  --quantization fp8 ...
+</code></pre>
+<p>TTFT dropped 36%. TPOT dropped 33%. End-to-end dropped 32%. That's a dense, useful result from one configuration change. The <code>fused_moe_kernel</code> itself went from 66.9 ms to 35.2 ms — a 47% reduction on the biggest kernel in the profile. Exactly what the bandwidth-bound theory predicts: halve the weight bytes, nearly halve the time.</p>
+<p>One thing worth flagging: the L4 is an sm_89 GPU (Ada), and the conventional wisdom is that FP8 is "storage only" on Ada — dequantized to bf16 for the actual compute. That turned out to be wrong for this stack. vLLM routes FP8 MoE through CUTLASS kernels explicitly tagged <code>enable_sm89_to_sm90</code>, which do FP8 math on L4's tensor cores directly. The full speedup is real, not a storage illusion.</p>
+<p>But speed is only useful if the model still does its job, so I ran the full <code>lm-evaluation-harness</code> suite on four tasks:</p>
+<p><img alt="FP8 accuracy: four-task eval vs bf16 baseline" src="figures/tables/fp8_accuracy.png" /></p>
+<p>Three within noise. Math takes a real hit. GSM8K is grade-school arithmetic reasoning, and arithmetic reasoning compounds small-precision errors in ways multiple-choice tasks don't. If your workload is math, scientific computation, or anything that relies on precise arithmetic, test FP8 on your own evals before committing.</p>
+<p>For everything else, FP8 is essentially free 33% throughput.</p>
+<h3>Prefix caching: −67% when prefixes are long</h3>
+<p>If two requests share a prompt prefix — say a 2000-token system prompt with tool descriptions and few-shot examples, and the user's actual question is a short suffix — the model's internal representation of that prefix is identical between requests. Re-processing it is waste. Prefix caching keeps the intermediate state (the "KV cache") and reuses it on subsequent requests with matching prefixes.</p>
+<p>I ran an experiment with a shared prefix of length P, a unique 64-token suffix per request, and measured TTFT with and without caching:</p>
+<p><img alt="Prefix caching benefit vs prefix length" src="figures/prefix_caching.png" /></p>
+<p>The green line stays nearly flat at 60 ms regardless of prefix length. That's because the prefix is being skipped entirely; only the suffix gets prefilled. The red line grows with total prompt length, as prefill cost must. The gap is the saved work — and at a 2048-token prefix, that's a 67% TTFT reduction.</p>
+<p>Production chatbot workloads with long system prompts live on the right side of this curve, which is where the 10× cost-reduction claims in Anthropic's prompt-caching documentation come from. The catch: if every request has a unique prompt, this lever does nothing.</p>
+<p>One gotcha I hit: vLLM's <code>vllm serve</code> (the real production server) turns prefix caching on by default, while <code>vllm bench latency</code> (the benchmark tool) turns it off — there's a comment in the vLLM source explicitly saying it "skews the latency numbers." A customer benchmarking with one tool and serving with the other is measuring two different things. Worth double-checking in any customer benchmark.</p>
+<h3>Batching: the MoE tax and the knee</h3>
+<p>For dense models, batching is supposed to be close to free for decode. Textbook: weight loading is the bottleneck at low batch, so serving 16 users in one decode pass gets you 16× the throughput for roughly the same per-user latency.</p>
+<p>I measured this on OLMoE, pure decode, batch sizes 1 through 128:</p>
+<p><img alt="Batching sweep, B=1 through B=128" src="figures/tables/batching.png" /></p>
+<p>From B=1 to B=32, TPOT grew 5×. That is NOT the "batching is free" story. What's going on?</p>
+<p>OLMoE has 64 experts; each token picks top-8. At batch=1, each decode step loads 8 experts' worth of weights. At batch=32, the 32 tokens independently pick their top-8 each — collectively they probably touch most of the 64 experts. That's 8× more weight bytes per forward pass. The theoretical ceiling on speedup isn't 32×, it's 32/8 = <strong>4×</strong>. I measured 5.7× throughput at B=32, which basically matches.</p>
+<p>That's the MoE tax: wider experts with sparser activation means larger batches load more expert <em>variety</em>. The "batching is free" textbook is a dense-model claim.</p>
+<p>But here's the knee. Once the batch is big enough that you're touching all 64 experts anyway, additional concurrency stops adding weight-loading cost — it just adds compute. Past the knee, the dense-model economics finally kick in:</p>
+<ul>
+<li>B=32 → 64: throughput <strong>doubles</strong> (581 → 1128), TPOT only grows 11%.</li>
+<li>B=64 → 128: throughput <strong>doubles again</strong> (1128 → 2055), TPOT grows 17%.</li>
+</ul>
+<p>So on one L4, OLMoE peaks at about 2055 tokens per second at B=128. That's the capacity-planning number. TTFT p90 at that load is about 1.9 seconds though, so whether this is the right operating point depends on what latency your users tolerate.</p>
+<p>The batching Pareto, concretely: a latency-sensitive chat product should run at B=1-4 to keep TPOT low. A cost-sensitive batch pipeline should run at B=64-128 to maximize throughput per dollar. There is no universal right batch size; the SLO decides.</p>
+<h3>TensorRT-LLM: not applicable here</h3>
+<p>I also tried TensorRT-LLM, NVIDIA's own inference engine, which often delivers 10–30% over vLLM on supported models. The catch for this workload: <strong>TRT-LLM 1.2 does not support OLMoE.</strong> I checked three ways — the examples directory in the repo, the authoritative supported-models documentation, and GitHub issue history. OLMoE's 64-expert/top-8 architecture would need a custom model converter derived from the Mixtral example. That's weeks of work, not an afternoon.</p>
+<p>This is a real finding worth naming: <strong>engine choice depends on model choice, and vice versa.</strong> Before committing to a model, check what engines support it. Ecosystem fragmentation is a real cost that customers run into constantly.</p>
+<hr />
+<h2>Answering the customer</h2>
+<p>Back to the opening question: is OLMoE on one L4 fast? What should the customer do?</p>
+<p>Here's what I'd tell them, in order:</p>
+<ol>
+<li><strong>Your baseline is fine.</strong> 94 ms TTFT at 1024 tokens, 10 ms per output token. Here's the reproducible number you can benchmark future changes against.</li>
+<li><strong>Turn on FP8.</strong> One flag. 33% faster end-to-end. Run your evals first if you care about math accuracy.</li>
+<li><strong>If your prompts share a prefix, enable prefix caching.</strong> Up to 67% TTFT reduction at 2000-token prefixes. Zero benefit if prompts are unique.</li>
+<li><strong>Size batching to your SLO.</strong> Peak throughput on this hardware is 2055 tok/s at B=128, but per-user latency balloons. The right batch size depends on what your users will tolerate.</li>
+<li><strong>Don't write a custom kernel.</strong> The profile shows no gap to close. The hot kernels are already tensor-core-tuned by engineers who know this hardware better than you do.</li>
+</ol>
+<p>That's a ranked list of interventions with measured impacts, not a pile of intuitions.</p>
+<p>The method generalizes beyond OLMoE or L4 or vLLM. It's a process: measure first, model the hypothesis with back-of-envelope math, verify with the profiler, enumerate the levers, measure each one against the same baseline, report tradeoffs instead of decrees. The kernel — if you ever write one — is the easy part. The hard part is knowing whether you should.</p>
+<p>The full repo is at <a href="https://github.com/harishvs/olmoe-kernel">github.com/harishvs/olmoe-kernel</a>. Benchmark scripts, profile data, plot generators, the engine-agnostic harness, and all the raw JSON are checked in. Clone it, run it on your own box, adapt it to your own model.</p>
+</body></html>
