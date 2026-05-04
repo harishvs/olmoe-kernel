@@ -15,20 +15,27 @@ blockquote { border-left: 3px solid #888; padding-left: 16px; color: #555; font-
 </style></head>
 <body>
 <h1>Is it fast? What I learned profiling OLMoE on one L4</h1>
-<p>This is a write-up of an experiment I ran over a few days on an ordinary AWS instance — a <code>g6.4xlarge</code>, which is $1.32 an hour and has one NVIDIA L4 GPU. I wanted to take a real open-source language model, ask a simple question about it, and actually answer that question with measurements instead of intuition.</p>
+<p>This is a write-up of an experiment I ran over a few days on an ordinary AWS instance — a <code>g6.4xlarge</code>, which is $1.32 an hour and has one NVIDIA L4 GPU. The L4 is NVIDIA's mid-tier inference GPU: 24 GB of memory, about one-tenth the raw horsepower of an H100, and by far the most common GPU that small-and-medium teams actually run inference workloads on. If you're running an LLM in production on a budget, there's a good chance it's sitting on one of these.</p>
+<p>I wanted to take a real open-source language model, ask a simple question about it, and actually answer that question with measurements instead of intuition.</p>
 <p>The question was: <strong>is it fast?</strong></p>
-<p>Specifically: I'm running <a href="https://huggingface.co/allenai/OLMoE-1B-7B-0924-Instruct">OLMoE-1B-7B-Instruct</a> on vLLM on one L4. Am I getting good performance? What can I do to make it better?</p>
+<p>Specifically: I'm running <a href="https://huggingface.co/allenai/OLMoE-1B-7B-0924-Instruct">OLMoE-1B-7B-Instruct</a> (an open-source language model from AI2) on <a href="https://github.com/vllm-project/vllm">vLLM</a> (the de facto open-source inference server) on one L4 GPU. Am I getting good performance? What can I do to make it better?</p>
 <p>If you've ever fielded this question from a teammate, you know it's harder than it looks. "Good" relative to what? Better how? There's no crystal ball. There's only measurement, a mental model of what the machine is doing, and a ranked set of things to try.</p>
 <p>Here's what the measurements said.</p>
 <hr />
 <h2>Setting the baseline</h2>
 <p>Rule one of performance work: you cannot optimize what you have not measured.</p>
-<p>I wrote a small script that calls <code>vllm bench latency</code> across a grid of configurations: input lengths of 32, 128, 512, 1024 tokens, paired with output lengths of 1 and 128 tokens. The output-length-1 runs give me prefill cost alone — what's called <strong>TTFT</strong>, time to first token. The output-length-128 runs give me prefill-plus-decode. Subtract the two, divide by 127, and I get decode cost per token — <strong>TPOT</strong>, time per output token.</p>
+<p>I wrote a small script that calls <code>vllm bench latency</code> across a grid of configurations: input lengths of 32, 128, 512, 1024 tokens (a "token" being the small sub-word units a language model actually consumes — roughly a syllable), paired with output lengths of 1 and 128 tokens.</p>
+<p>Inference runs in two phases, and they cost different amounts:</p>
+<ul>
+<li><strong>Prefill</strong> — the model chews through the whole input prompt before it can produce anything. Cost scales with input length.</li>
+<li><strong>Decode</strong> — the model generates output tokens one at a time, each one depending on all the ones before it. Cost scales with output length.</li>
+</ul>
+<p>The output-length-1 runs give me prefill cost alone — what's called <strong>TTFT</strong>, time to first token. The output-length-128 runs give me prefill-plus-decode. Subtract the two, divide by 127, and I get decode cost per token — <strong>TPOT</strong>, time per output token.</p>
 <p>30 iterations per configuration, 3 warmup iterations discarded, seed pinned at 42 so the synthetic prompts are identical run to run. Here's what fell out:</p>
 <p><img alt="Baseline TTFT/TPOT across input lengths" src="https://raw.githubusercontent.com/harishvs/olmoe-kernel/main/talk/figures/tables/baseline.png" /></p>
 <p>Three things jumped out, and they set up everything that followed.</p>
 <p><strong>First, the variance is tiny.</strong> Across 30 iterations, p90 is within one millisecond of the mean. This is the reward for fixing the seed and running enough iterations. It meant any speedup I'd measure later would be a real signal, not noise.</p>
-<p><strong>Second, TTFT grows sub-linearly with input length.</strong> A 32× growth in input produced only 2.4× growth in prefill time. If you've read transformer papers you know attention is O(N²) — self-attention scales quadratically with input length. If attention dominated prefill, my TTFT curve should bend upward. It wasn't bending. Something else was eating the time.</p>
+<p><strong>Second, TTFT grows sub-linearly with input length.</strong> A 32× growth in input produced only 2.4× growth in prefill time. The common wisdom is that "attention" — the part of a transformer where every token looks at every other token — scales quadratically with input length (double the input, quadruple the attention work). So if attention were dominating prefill, doubling the input should more than double the time. It wasn't. Something else was eating the clock.</p>
 <p><strong>Third, TPOT is nearly flat.</strong> Decode per token grew from 10.0 to 10.7 ms across a 32× input size change — six percent. Whatever's happening during decode, it barely cares how long the prompt was. That's a strong hint that decode has a different bottleneck than prefill.</p>
 <p><img alt="TTFT grows sub-linearly" src="https://raw.githubusercontent.com/harishvs/olmoe-kernel/main/talk/figures/ttft_vs_length.png" />
 <em>The red dotted line is what attention-dominated prefill would look like (42 seconds at L=1024). The measured curve (blue) doesn't bend that way. In fact, it sits below even a linear reference.</em></p>
@@ -39,36 +46,43 @@ blockquote { border-left: 3px solid #888; padding-left: 16px; color: #555; font-
 <p>That's the MoE trick. 64 experts' worth of <em>capacity</em> for 8 experts' worth of <em>compute</em> per token. OLMoE has 7 billion total parameters but only about 1 billion activate for any given token. It's how modern MoE models like Mixtral, DeepSeek, and GPT-4 are architected.</p>
 <p>Now. Why isn't prefill attention-bound?</p>
 <p>The answer is one of those math-class moments where the constant factor buries the asymptotic. Let me show the arithmetic instead of asking you to take it on faith.</p>
-<p><strong>The one formula:</strong> a matrix multiplication of shape <code>A (m × k) · B (k × n)</code> costs about <code>2 · m · n · k</code> floating-point operations. Every matmul in a transformer fits this shape. If you remember only one formula from this post, pick this one — you can estimate any model's compute cost on a napkin.</p>
-<p>Now let's count, per layer, at input length N=1024.</p>
-<p><strong>Attention's expensive piece is the score matrix</strong> — each of N tokens takes a dot product with every other token. That's two back-to-back matmuls of shape <code>(N × d_head) · (d_head × N)</code> and its transpose, summed across all attention heads. On OLMoE, the total "attention width" (num_heads × d_head) equals d_model = 2048. So per layer:</p>
-<pre><code>Attention score + apply FLOPs = 4 · N² · d_model
-                              = 4 · (1024)² · 2048
-                              ≈ 8.6 × 10⁹ = 8.6 GFLOPs
+<p><strong>First, four numbers that describe OLMoE's shape.</strong> Any transformer is specified by a handful of dimensions:</p>
+<ul>
+<li><strong><code>d_model = 2048</code>.</strong> Each token is represented inside the model as a vector of 2048 numbers. Pick any token in your prompt — right now, inside the model, it's 2048 floats.</li>
+<li><strong><code>num_heads = 16</code>, <code>d_head = 128</code>.</strong> Attention doesn't do one big computation; it splits the 2048 dimensions into 16 parallel "heads" of 128 each, so 16 × 128 = 2048. Each head can learn to pay attention to a different <em>kind</em> of thing (one head for grammatical subjects, one for negation, one for names, and so on). Splitting into heads doesn't change the total work — it just parallelizes it across heads that learn different patterns.</li>
+<li><strong><code>d_ff ≈ 1024</code>.</strong> Each of OLMoE's experts is a little neural network that temporarily expands the token's representation from 2048 dimensions up to 1024 intermediate dimensions and then back down. That expansion is the "feed-forward" part. Wider feed-forward networks can learn more complex things per token.</li>
+</ul>
+<p><strong>Second, the one formula you actually need:</strong> a matrix multiplication of shape <code>A (m × k) · B (k × n)</code> costs about <code>2 · m · n · k</code> floating-point operations. Every matmul in a transformer fits this shape. If you remember only one formula from this post, pick this one — you can estimate any model's compute cost on a napkin.</p>
+<p>Now let's count, per layer, at input length N = 1024. I'll use <strong>FLOPs</strong> (floating-point operations) as the unit of "work"; a <strong>GFLOP</strong> is a billion of them.</p>
+<p><strong>Attention's expensive piece is the score matrix</strong> — each of N tokens takes a dot product with every other token. That's two back-to-back matmuls of shape <code>(N × d_head) · (d_head × N)</code> and its transpose, summed across all 16 heads. So per layer:</p>
+<pre><code>Attention FLOPs = 4 · N² · (num_heads · d_head)
+                = 4 · N² · d_model
+                = 4 · (1024)² · 2048
+                ≈ 8.6 × 10⁹
+                = 8.6 GFLOPs
 </code></pre>
-<p>That's the N² term. Doubles when N doubles. Quadruples when N doubles again.</p>
-<p><strong>MoE FFN's expensive piece is a wide matmul per active expert.</strong> OLMoE activates 8 experts per token; each expert has an intermediate dimension of about <code>d_ff ≈ 1024</code> and runs two matmuls (up-proj + down-proj). Total FLOPs per token, per layer:</p>
+<p><strong>MoE FFN's expensive piece is a wide matmul per active expert.</strong> Each token activates 8 experts; each expert has the 2048 → 1024 → 2048 shape I described, which is two matmuls. Total per token:</p>
 <pre><code>FFN FLOPs per token = 8 experts × 2 matmuls × 2 · d_model · d_ff
                     = 8 × 2 × 2 · 2048 · 1024
-                    ≈ 6.7 × 10⁷ FLOPs per token
+                    ≈ 6.7 × 10⁷
 </code></pre>
-<p>Multiply by N tokens in the prefill batch:</p>
+<p>Multiply by N tokens in the prefill:</p>
 <pre><code>FFN FLOPs per layer = (6.7 × 10⁷) · N
                     = (6.7 × 10⁷) · 1024
-                    ≈ 6.9 × 10¹⁰ = 69 GFLOPs
+                    ≈ 6.9 × 10¹⁰
+                    = 69 GFLOPs
 </code></pre>
-<p>That's the N¹ term — linear in N. It doubles when N doubles.</p>
 <p><strong>Side by side at N=1024:</strong></p>
 <pre><code>Attention:  8.6 GFLOPs   (grows as N²)
 MoE FFN:    69  GFLOPs   (grows as N, but with a huge coefficient)
 </code></pre>
-<p>FFN is doing <strong>8× more work than attention</strong> at this length. Yes, attention is asymptotically worse — but look at the coefficients: <code>4 · d_model</code> vs. <code>32 · d_model · d_ff</code>. The FFN coefficient is <code>8 · d_ff</code> ≈ 8,000 times larger. Attention's quadratic growth takes a while to catch up.</p>
-<p>Solve for the crossover: <code>4 · N² · d_model = 32 · N · d_model · d_ff</code> gives <code>N = 8 · d_ff ≈ 8,000 tokens</code>. Below that, FFN dominates. Above that, attention dominates.</p>
-<p>I was benchmarking at N=1024. I was deep in FFN territory, and FFN was doing most of the work.</p>
+<p>FFN is doing <strong>8× more work than attention</strong> at this length. Yes, attention is asymptotically worse — its growth rate eventually wins. But look at the starting point. The FFN coefficient is about 8,000 times larger than the attention coefficient. It takes a while for quadratic growth to catch up with a head start that big.</p>
+<p>Solve for the crossover: attention equals FFN when <code>N = 8 · d_ff ≈ 8,000 tokens</code>. Below that, FFN dominates. Above that, attention dominates.</p>
+<p>I was benchmarking at N=1024. Deep in FFN territory. FFN was doing most of the work.</p>
 <p>That's the first surprise resolved. Attention isn't the bottleneck at these lengths. The textbook was telling me the right story for the wrong regime.</p>
 <p>Now decode. Why is TPOT flat?</p>
 <p>Decode is a different animal. During decode, we generate one token at a time. Each step has almost no arithmetic — it's one token's worth of multiplies. But the model still has to load all its weights from GPU memory to multiply against that one token.</p>
-<p>Think of it as a chef running back and forth to the fridge. On a GPU, the chef is the tensor cores and the fridge is HBM memory. When you're doing prefill with 1024 tokens of work, the tensor cores are fully lit — cook-bound, or compute-bound. When you're doing decode with one token, the tensor cores sit idle waiting for the chef to fetch the next armload of weights. That's fridge-bound, or <strong>memory-bandwidth-bound</strong>.</p>
+<p>Think of it as a chef running back and forth to the fridge. On a GPU, the chef is the <strong>tensor cores</strong> (specialized hardware units that do matrix multiplications extremely fast) and the fridge is <strong>HBM</strong> (high-bandwidth memory — the GPU's main memory, where all the model's weights are stored). When you're doing prefill with 1024 tokens of work, the tensor cores are fully lit — compute-bound, "cook-bound" in the analogy. When you're doing decode with one token, the tensor cores sit idle waiting for the chef to fetch the next armload of weights. That's bandwidth-bound, "fridge-bound" — you're limited by how fast you can move data, not by how fast you can compute.</p>
 <p>The L4 has about 300 GB/s of memory bandwidth. OLMoE at decode has to load roughly 3 GB of active-expert weights per token (only 8 of 64 experts fire per token). Theoretical floor: 3 GB / 300 GB/s = 10 milliseconds per token. I measured 10 ms. The GPU was bandwidth-saturated.</p>
 <p>That's the second surprise. Decode doesn't care how long the prompt was because it's not doing prompt-proportional work — it's doing weight-loading work, and the weights are the same size regardless of prompt length.</p>
 <p>Two surprises, two different bottlenecks, two different levers.</p>
@@ -89,7 +103,7 @@ MoE FFN:    69  GFLOPs   (grows as N, but with a huge coefficient)
 <h2>The levers, measured</h2>
 <p>There are seven commonly-cited ways to speed up inference. I measured five of them. Here's where they landed for this workload.</p>
 <h3>FP8 quantization: −33% end-to-end</h3>
-<p>Weights are stored as bf16 by default — 16 bits each. FP8 means each weight takes 8 bits instead. Think of it like writing a phone number to one decimal place instead of two: some information loss, half the paper.</p>
+<p>Every weight in the model is a number, and those numbers have a format. The default in modern LLMs is <strong>bf16</strong> ("brain float 16") — 16 bits per number, which gives about four decimal digits of precision. <strong>FP8</strong> ("8-bit floating point") uses 8 bits per number, which gives about two decimal digits. Think of it as writing a phone number to one decimal place instead of two: a bit of information loss, half the paper.</p>
 <p>For a bandwidth-bound decode, halving the weight size is almost a 2× speedup on the bandwidth-bound portion. I flipped one vLLM flag:</p>
 <pre><code class="language-bash">vllm bench latency --model allenai/OLMoE-1B-7B-0924-Instruct \
   --quantization fp8 ...
@@ -101,7 +115,7 @@ MoE FFN:    69  GFLOPs   (grows as N, but with a huge coefficient)
 <p>Three within noise. Math takes a real hit. GSM8K is grade-school arithmetic reasoning, and arithmetic reasoning compounds small-precision errors in ways multiple-choice tasks don't. If your workload is math, scientific computation, or anything that relies on precise arithmetic, test FP8 on your own evals before committing.</p>
 <p>For everything else, FP8 is essentially free 33% throughput.</p>
 <h3>Prefix caching: −67% when prefixes are long</h3>
-<p>If two requests share a prompt prefix — say a 2000-token system prompt with tool descriptions and few-shot examples, and the user's actual question is a short suffix — the model's internal representation of that prefix is identical between requests. Re-processing it is waste. Prefix caching keeps the intermediate state (the "KV cache") and reuses it on subsequent requests with matching prefixes.</p>
+<p>If two requests share a prompt prefix — say a 2000-token system prompt with tool descriptions and few-shot examples, and the user's actual question is a short suffix — the model's internal representation of that prefix is identical between requests. Re-processing it is waste. Prefix caching keeps the intermediate state — specifically what's called the <strong>KV cache</strong>, which is what the attention mechanism has already figured out about each prior token — and reuses it on subsequent requests with matching prefixes.</p>
 <p>I ran an experiment with a shared prefix of length P, a unique 64-token suffix per request, and measured TTFT with and without caching:</p>
 <p><img alt="Prefix caching benefit vs prefix length" src="https://raw.githubusercontent.com/harishvs/olmoe-kernel/main/talk/figures/prefix_caching.png" /></p>
 <p>The green line stays nearly flat at 60 ms regardless of prefix length. That's because the prefix is being skipped entirely; only the suffix gets prefilled. The red line grows with total prompt length, as prefill cost must. The gap is the saved work — and at a 2048-token prefix, that's a 67% TTFT reduction.</p>
@@ -120,7 +134,7 @@ MoE FFN:    69  GFLOPs   (grows as N, but with a huge coefficient)
 <li>B=64 → 128: throughput <strong>doubles again</strong> (1128 → 2055), TPOT grows 17%.</li>
 </ul>
 <p>So on one L4, OLMoE peaks at about 2055 tokens per second at B=128. That's the capacity-planning number. TTFT p90 at that load is about 1.9 seconds though, so whether this is the right operating point depends on what latency your users tolerate.</p>
-<p>The batching Pareto, concretely: a latency-sensitive chat product should run at B=1-4 to keep TPOT low. A cost-sensitive batch pipeline should run at B=64-128 to maximize throughput per dollar. There is no universal right batch size; the SLO decides.</p>
+<p>The batching tradeoff, concretely: a latency-sensitive chat product should run at B=1-4 to keep TPOT low. A cost-sensitive batch pipeline should run at B=64-128 to maximize throughput per dollar. There is no universal right batch size; the <strong>SLO</strong> (service-level objective — the latency your product promises its users) decides.</p>
 <h3>TensorRT-LLM: not applicable here</h3>
 <p>I also tried TensorRT-LLM, NVIDIA's own inference engine, which often delivers 10–30% over vLLM on supported models. The catch for this workload: <strong>TRT-LLM 1.2 does not support OLMoE.</strong> I checked three ways — the examples directory in the repo, the authoritative supported-models documentation, and GitHub issue history. OLMoE's 64-expert/top-8 architecture would need a custom model converter derived from the Mixtral example. That's weeks of work, not an afternoon.</p>
 <p>This is a real finding worth naming: <strong>engine choice depends on model choice, and vice versa.</strong> Before committing to a model, check what engines support it. Ecosystem fragmentation is a real cost that customers run into constantly.</p>

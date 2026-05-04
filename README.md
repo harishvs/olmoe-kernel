@@ -23,6 +23,23 @@ Full writeup: [`talk/story.md`](talk/story.md).
 - **Python:** 3.12.
 - **Disk:** ~20 GB for the model download, another ~1 GB for ShareGPT dataset if you run batching.
 
+### Exact environment used for the measurements in this repo
+
+All numbers were collected on this configuration. If you want to reproduce them verbatim:
+
+| Component | Value |
+|---|---|
+| Instance type | `g6.4xlarge` (1× NVIDIA L4, 16 vCPU, 64 GB RAM) |
+| Region | `us-west-2` |
+| AMI | `ami-0563479679ac2e7a6` |
+| AMI name | Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.10 (Ubuntu 24.04) 20260427 |
+| NVIDIA driver | 580.126.16 |
+| OS | Ubuntu 24.04.4 LTS |
+
+The AMI above is the **AWS Deep Learning OSS Nvidia AMI** — AMI IDs are region-specific, so if you're not in `us-west-2`, search the EC2 console for the AMI name above (it's published by Amazon in every region). Any recent DLAMI in the same family should also work; the important thing is that the NVIDIA driver and CUDA runtime come bundled and match — installing vLLM on a fresh Ubuntu without these pre-installed is its own multi-hour ordeal.
+
+If you're running outside AWS, the requirements are: **NVIDIA driver 580+** (CUDA 13 compatible — that's the floor, not a preference), Python 3.12, and a GPU with compute capability 8.9+ (Ada or newer — L4, L40S, RTX 4090, H100, H200 all qualify). Older cards like T4 (7.5) or A100 (8.0) will likely fail or perform poorly because the FP8 kernels used in this repo are tagged for sm_89+. You shouldn't need to install CUDA Toolkit separately — `uv sync` pulls CUDA 13 runtime libraries via pip (cublas, cudnn, cuda-runtime, etc.), but those still need a 580+ driver on the host to work.
+
 ## Setup
 
 This repo uses [uv](https://docs.astral.sh/uv/) for Python environment management.
