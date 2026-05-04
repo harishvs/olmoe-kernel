@@ -109,7 +109,6 @@ MoE FFN:    69  GFLOPs   (grows as N, but with a huge coefficient)
   --quantization fp8 ...
 </code></pre>
 <p>TTFT dropped 36%. TPOT dropped 33%. End-to-end dropped 32%. That's a dense, useful result from one configuration change. The <code>fused_moe_kernel</code> itself went from 66.9 ms to 35.2 ms — a 47% reduction on the biggest kernel in the profile. Exactly what the bandwidth-bound theory predicts: halve the weight bytes, nearly halve the time.</p>
-<p>One thing worth flagging: the L4 is an sm_89 GPU (Ada), and the conventional wisdom is that FP8 is "storage only" on Ada — dequantized to bf16 for the actual compute. That turned out to be wrong for this stack. vLLM routes FP8 MoE through CUTLASS kernels explicitly tagged <code>enable_sm89_to_sm90</code>, which do FP8 math on L4's tensor cores directly. The full speedup is real, not a storage illusion.</p>
 <p>But speed is only useful if the model still does its job, so I ran the full <code>lm-evaluation-harness</code> suite on four tasks:</p>
 <p><img alt="FP8 accuracy: four-task eval vs bf16 baseline" src="https://raw.githubusercontent.com/harishvs/olmoe-kernel/main/talk/figures/tables/fp8_accuracy.png" /></p>
 <p>Three within noise. Math takes a real hit. GSM8K is grade-school arithmetic reasoning, and arithmetic reasoning compounds small-precision errors in ways multiple-choice tasks don't. If your workload is math, scientific computation, or anything that relies on precise arithmetic, test FP8 on your own evals before committing.</p>
