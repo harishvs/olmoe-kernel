@@ -161,8 +161,7 @@ results/
   harness/                # HTTP-harness outputs
   profile/                # torch.profiler traces + summaries
 talk/
-  story.md                # full narrative writeup of the experiment
-  figures/                # embedded plots and diagrams
+  figures/                # embedded plots and diagrams (used by the published post)
 tasks/
   requirements.md         # user stories
   design.md               # methodology + lever board
