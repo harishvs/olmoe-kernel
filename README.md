@@ -14,7 +14,7 @@ A reproducible measurement of OLMoE-1B-7B-Instruct served by vLLM on a single NV
 | Batching | 2055 tok/s peak at B=128; MoE tax below B=32 | `results/harness/batching_decode/` |
 | TensorRT-LLM | Not applicable — OLMoE not supported in TRT-LLM 1.2 | (verified, not measured) |
 
-Full writeup: [`talk/story.md`](talk/story.md).
+Full writeup: [Is it fast? What I learned profiling OLMoE on one L4](https://substack.com/home/post/p-196431573).
 
 ## Requirements
 
